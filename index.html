@@ -3,31 +3,25 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PDF Multi-Rename + Zoom + 1-by-1 Save + ZIP</title>
+<title>PDF Multi-Rename + OCR Auto</title>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
 
 <style>
 body { font-family: Arial, sans-serif; margin: 20px; }
-#viewerContainer { position: relative; width: 100%; max-width: 800px; }
-#viewer {
-  border: 1px solid #ccc;
-  width: 100%;
-  height: 600px;
-  overflow: auto;
-}
-canvas { width: 100%; display: block; }
+#viewerContainer { position: relative; width: 100%; max-width: 900px; }
+#viewer { border: 1px solid #ccc; width: 100%; height: 600px; overflow: auto; position: relative; }
+canvas { display: block; cursor: crosshair; }
 
 .controls {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
-
   position: sticky;
   top: 0;
   background: #fff;
@@ -40,7 +34,13 @@ input { padding: 6px; width: 300px; }
 button { padding: 8px 14px; }
 #renameContainer { flex: 1; display: flex; align-items: center; gap: 10px; }
 
-/* Floating message */
+#selectionBox {
+  position: absolute;
+  border: 2px dashed #f00;
+  pointer-events: none;
+  display: none;
+}
+
 #msg {
   position: fixed;
   top: 10px;
@@ -56,27 +56,35 @@ button { padding: 8px 14px; }
 </head>
 <body>
 
-<h2>PDF Multi-Rename + Zoom + 1-by-1 Save + ZIP</h2>
-<p>Import multiple PDFs → Preview → Zoom → Enter custom path/name → Save pages → Download all at once.</p>
+<h2>PDF Multi-Rename + OCR Auto</h2>
 
 <input type="file" id="pdfFilesInput" accept="application/pdf" multiple><br><br>
-<input id="customName" placeholder="Enter custom path/name (example: FL/TW/GAL/18/03/0490)">
-<button id="savePage">Save This Page</button>
-<button id="downloadAll">Download All Saved Pages</button>
+
+<div class="controls" id="topControls">
+  <div id="renameContainer">
+    <input id="customName" placeholder="Enter custom path/name (e.g., FL-TW-GAL-18-03-0490)">
+    <button id="savePage">Save This Page</button>
+    <button id="downloadAll">Download All Saved Pages</button>
+  </div>
+
+  <button id="prevPDF">⬅ Prev PDF</button>
+  <button id="nextPDF">Next PDF ➡</button>
+  <span>PDF: <span id="pdfIndex">0</span> / <span id="pdfCount">0</span></span>
+
+  <button id="prev">⬅ Prev Page</button>
+  <button id="next">Next Page ➡</button>
+  <span>Page: <span id="pageNum">0</span> / <span id="pageCount">0</span></span>
+
+  <button id="zoomOut">➖ Zoom Out</button>
+  <button id="zoomIn">➕ Zoom In</button>
+  <span>Zoom: <span id="zoomLevel">1.0</span>x</span>
+</div>
 
 <div id="viewerContainer">
-  <div class="controls" id="topControls">
-    <button id="prevPDF">⬅ Prev PDF</button>
-    <button id="nextPDF">Next PDF ➡</button>
-    <span>PDF: <span id="pdfIndex">0</span> / <span id="pdfCount">0</span></span>
-    <button id="prev">⬅ Prev Page</button>
-    <button id="next">Next Page ➡</button>
-    <span>Page: <span id="pageNum">0</span> / <span id="pageCount">0</span></span>
-    <button id="zoomOut">➖ Zoom Out</button>
-    <button id="zoomIn">➕ Zoom In</button>
-    <span>Zoom: <span id="zoomLevel">1.0</span>x</span>
+  <div id="viewer">
+    <canvas id="canvas"></canvas>
+    <div id="selectionBox"></div>
   </div>
-  <div id="viewer"><canvas id="canvas"></canvas></div>
 </div>
 
 <div id="msg"></div>
@@ -90,6 +98,10 @@ let canvas = document.getElementById("canvas");
 let ctx = canvas.getContext("2d");
 let pdfDoc = null;
 let zip = new JSZip();
+
+const selectionBox = document.getElementById("selectionBox");
+let isDragging = false;
+let startX, startY;
 
 // --- Floating message ---
 function showMsg(text) {
@@ -125,8 +137,6 @@ function loadPDFForPreview(index) {
   document.getElementById("pageCount").textContent = pdfDoc.numPages;
   document.getElementById("pdfIndex").textContent = index + 1;
   renderPage(pageNum);
-
-  // Auto-fill rename field with PDF name for the first page
   document.getElementById("customName").value = pdfFiles[index].name;
 }
 
@@ -139,10 +149,10 @@ function renderPage(num) {
     canvas.style.width = viewport.width + "px";
     canvas.style.height = viewport.height + "px";
 
-    page.render({ canvasContext: ctx, viewport });
-
-    document.getElementById("pageNum").textContent = num;
-    document.getElementById("zoomLevel").textContent = zoom.toFixed(1);
+    page.render({ canvasContext: ctx, viewport }).promise.then(() => {
+      document.getElementById("pageNum").textContent = num;
+      document.getElementById("zoomLevel").textContent = zoom.toFixed(1);
+    });
   });
 }
 
@@ -154,19 +164,18 @@ document.getElementById("zoomOut").onclick = () => { if (zoom > 0.4) { zoom -= 0
 document.getElementById("prevPDF").onclick = () => { if (currentPDFIndex > 0) { currentPDFIndex--; loadPDFForPreview(currentPDFIndex); } };
 document.getElementById("nextPDF").onclick = () => { if (currentPDFIndex < pdfFiles.length - 1) { currentPDFIndex++; loadPDFForPreview(currentPDFIndex); } };
 
-// --- Save page into ZIP (1-by-1) ---
+// --- Save page into ZIP ---
 document.getElementById("savePage").onclick = async () => {
   const path = document.getElementById("customName").value.trim();
   if (!path) return showMsg("Enter a custom path/name first.");
 
   const page = await pdfDoc.getPage(pageNum);
-  const viewport = page.getViewport({ scale: 2 });
+  const viewport = page.getViewport({ scale: 3 });
   const tempCanvas = document.createElement("canvas");
   tempCanvas.width = viewport.width;
   tempCanvas.height = viewport.height;
   await page.render({ canvasContext: tempCanvas.getContext("2d"), viewport }).promise;
 
-  // Convert canvas to JPEG 80%
   const jpegData = tempCanvas.toDataURL("image/jpeg", 0.8);
   const pdfOut = new jspdf.jsPDF({
     orientation: tempCanvas.width > tempCanvas.height ? "landscape" : "portrait",
@@ -177,18 +186,13 @@ document.getElementById("savePage").onclick = async () => {
 
   const pdfBlob = pdfOut.output("blob");
 
-  // Store in ZIP with folder paths
   const parts = path.split("/");
   let folder = zip;
-  for (let i = 0; i < parts.length - 1; i++) {
-    folder = folder.folder(parts[i]);
-  }
+  for (let i = 0; i < parts.length - 1; i++) folder = folder.folder(parts[i]);
   const fileName = parts[parts.length - 1] + ".pdf";
   folder.file(fileName, pdfBlob);
 
   showMsg(`Page ${pageNum} saved at ${path}.pdf`);
-
-  // Clear rename input after saving
   document.getElementById("customName").value = "";
 };
 
@@ -202,19 +206,66 @@ document.getElementById("downloadAll").onclick = () => {
 
 // --- Keyboard shortcuts ---
 document.addEventListener("keydown", (e) => {
-  // Enter → Save this page
-  if (e.key === "Enter") {
-    document.getElementById("savePage").click();
-    e.preventDefault();
-  }
-  // Right Arrow → Next page
-  else if (e.key === "ArrowRight") {
-    document.getElementById("next").click();
-  }
-  // Left Arrow → Previous page
-  else if (e.key === "ArrowLeft") {
-    document.getElementById("prev").click();
-  }
+  if (e.key === "Enter") { document.getElementById("savePage").click(); e.preventDefault(); }
+  else if (e.key === "ArrowRight") { document.getElementById("next").click(); }
+  else if (e.key === "ArrowLeft") { document.getElementById("prev").click(); }
+});
+
+// --- Drag selection + auto OCR ---
+canvas.addEventListener("mousedown", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  startX = e.clientX - rect.left;
+  startY = e.clientY - rect.top;
+  isDragging = true;
+  selectionBox.style.left = startX + "px";
+  selectionBox.style.top = startY + "px";
+  selectionBox.style.width = "0px";
+  selectionBox.style.height = "0px";
+  selectionBox.style.display = "block";
+});
+
+canvas.addEventListener("mousemove", (e) => {
+  if (!isDragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+  selectionBox.style.width = Math.abs(mouseX - startX) + "px";
+  selectionBox.style.height = Math.abs(mouseY - startY) + "px";
+  selectionBox.style.left = Math.min(mouseX, startX) + "px";
+  selectionBox.style.top = Math.min(mouseY, startY) + "px";
+});
+
+canvas.addEventListener("mouseup", async () => {
+  if (!isDragging) return;
+  isDragging = false;
+
+  const rect = selectionBox.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
+  const sx = rect.left - canvasRect.left;
+  const sy = rect.top - canvasRect.top;
+  const sw = rect.width;
+  const sh = rect.height;
+
+  if (sw === 0 || sh === 0) return selectionBox.style.display = "none";
+
+  const tempCanvas = document.createElement("canvas");
+  tempCanvas.width = sw;
+  tempCanvas.height = sh;
+  const tctx = tempCanvas.getContext("2d");
+  tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  showMsg("Performing OCR...");
+  const { data: { text } } = await Tesseract.recognize(tempCanvas, 'eng');
+  let cleanText = text.replace(/[\(\)\[\]\.:;]/g, "").trim();
+
+  // Replace / with -
+  cleanText = cleanText.replace(/\//g, "-");
+
+  // Insert into rename field immediately
+  document.getElementById("customName").value = cleanText;
+
+  selectionBox.style.display = "none";
+  showMsg("OCR text auto-filled in rename field");
 });
 </script>
 
