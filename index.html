@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF Multi-Rename + Zoom + 1-by-1 Save + ZIP</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; }
+#viewerContainer { position: relative; width: 100%; max-width: 800px; }
+#viewer {
+  border: 1px solid #ccc;
+  width: 100%;
+  height: 600px;
+  overflow: auto;
+}
+canvas { width: 100%; display: block; }
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+
+  position: sticky;
+  top: 0;
+  background: #fff;
+  padding: 10px;
+  z-index: 1000;
+  border-bottom: 1px solid #ccc;
+}
+
+input { padding: 6px; width: 300px; }
+button { padding: 8px 14px; }
+#renameContainer { flex: 1; display: flex; align-items: center; gap: 10px; }
+
+/* Floating message */
+#msg {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  background: #0a0;
+  color: #fff;
+  padding: 5px 12px;
+  border-radius: 5px;
+  display: none;
+  z-index: 2000;
+}
+</style>
+</head>
+<body>
+
+<h2>PDF Multi-Rename + Zoom + 1-by-1 Save + ZIP</h2>
+<p>Import multiple PDFs → Preview → Zoom → Enter custom path/name → Save pages → Download all at once.</p>
+
+<input type="file" id="pdfFilesInput" accept="application/pdf" multiple><br><br>
+<input id="customName" placeholder="Enter custom path/name (example: FL/TW/GAL/18/03/0490)">
+<button id="savePage">Save This Page</button>
+<button id="downloadAll">Download All Saved Pages</button>
+
+<div id="viewerContainer">
+  <div class="controls" id="topControls">
+    <button id="prevPDF">⬅ Prev PDF</button>
+    <button id="nextPDF">Next PDF ➡</button>
+    <span>PDF: <span id="pdfIndex">0</span> / <span id="pdfCount">0</span></span>
+    <button id="prev">⬅ Prev Page</button>
+    <button id="next">Next Page ➡</button>
+    <span>Page: <span id="pageNum">0</span> / <span id="pageCount">0</span></span>
+    <button id="zoomOut">➖ Zoom Out</button>
+    <button id="zoomIn">➕ Zoom In</button>
+    <span>Zoom: <span id="zoomLevel">1.0</span>x</span>
+  </div>
+  <div id="viewer"><canvas id="canvas"></canvas></div>
+</div>
+
+<div id="msg"></div>
+
+<script>
+let pdfFiles = [];
+let currentPDFIndex = 0;
+let pageNum = 1;
+let zoom = 1.5;
+let canvas = document.getElementById("canvas");
+let ctx = canvas.getContext("2d");
+let pdfDoc = null;
+let zip = new JSZip();
+
+// --- Floating message ---
+function showMsg(text) {
+  const msg = document.getElementById("msg");
+  msg.textContent = text;
+  msg.style.display = "block";
+  setTimeout(() => msg.style.display = "none", 1500);
+}
+
+// --- Load multiple PDFs ---
+document.getElementById("pdfFilesInput").onchange = async function(e) {
+  pdfFiles = [];
+  const files = e.target.files;
+  if (files.length === 0) return;
+
+  for (const file of files) {
+    const arrayBuf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument(new Uint8Array(arrayBuf)).promise;
+    pdfFiles.push({ name: file.name.replace(/\.pdf$/i, ""), pdfDoc: pdf, file });
+  }
+
+  currentPDFIndex = 0;
+  loadPDFForPreview(currentPDFIndex);
+
+  document.getElementById("pdfCount").textContent = pdfFiles.length;
+  document.getElementById("pdfIndex").textContent = currentPDFIndex + 1;
+};
+
+// --- Load PDF for preview ---
+function loadPDFForPreview(index) {
+  pdfDoc = pdfFiles[index].pdfDoc;
+  pageNum = 1;
+  document.getElementById("pageCount").textContent = pdfDoc.numPages;
+  document.getElementById("pdfIndex").textContent = index + 1;
+  renderPage(pageNum);
+
+  // Auto-fill rename field with PDF name for the first page
+  document.getElementById("customName").value = pdfFiles[index].name;
+}
+
+// --- Render page ---
+function renderPage(num) {
+  pdfDoc.getPage(num).then(page => {
+    const viewport = page.getViewport({ scale: zoom });
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.style.width = viewport.width + "px";
+    canvas.style.height = viewport.height + "px";
+
+    page.render({ canvasContext: ctx, viewport });
+
+    document.getElementById("pageNum").textContent = num;
+    document.getElementById("zoomLevel").textContent = zoom.toFixed(1);
+  });
+}
+
+// --- Navigation ---
+document.getElementById("prev").onclick = () => { if (pageNum > 1) { pageNum--; renderPage(pageNum); } };
+document.getElementById("next").onclick = () => { if (pdfDoc && pageNum < pdfDoc.numPages) { pageNum++; renderPage(pageNum); } };
+document.getElementById("zoomIn").onclick = () => { zoom += 0.2; renderPage(pageNum); };
+document.getElementById("zoomOut").onclick = () => { if (zoom > 0.4) { zoom -= 0.2; renderPage(pageNum); } };
+document.getElementById("prevPDF").onclick = () => { if (currentPDFIndex > 0) { currentPDFIndex--; loadPDFForPreview(currentPDFIndex); } };
+document.getElementById("nextPDF").onclick = () => { if (currentPDFIndex < pdfFiles.length - 1) { currentPDFIndex++; loadPDFForPreview(currentPDFIndex); } };
+
+// --- Save page into ZIP (1-by-1) ---
+document.getElementById("savePage").onclick = async () => {
+  const path = document.getElementById("customName").value.trim();
+  if (!path) return showMsg("Enter a custom path/name first.");
+
+  const page = await pdfDoc.getPage(pageNum);
+  const viewport = page.getViewport({ scale: 2 });
+  const tempCanvas = document.createElement("canvas");
+  tempCanvas.width = viewport.width;
+  tempCanvas.height = viewport.height;
+  await page.render({ canvasContext: tempCanvas.getContext("2d"), viewport }).promise;
+
+  // Convert canvas to JPEG 80%
+  const jpegData = tempCanvas.toDataURL("image/jpeg", 0.8);
+  const pdfOut = new jspdf.jsPDF({
+    orientation: tempCanvas.width > tempCanvas.height ? "landscape" : "portrait",
+    unit: "px",
+    format: [tempCanvas.width, tempCanvas.height]
+  });
+  pdfOut.addImage(jpegData, "JPEG", 0, 0, tempCanvas.width, tempCanvas.height);
+
+  const pdfBlob = pdfOut.output("blob");
+
+  // Store in ZIP with folder paths
+  const parts = path.split("/");
+  let folder = zip;
+  for (let i = 0; i < parts.length - 1; i++) {
+    folder = folder.folder(parts[i]);
+  }
+  const fileName = parts[parts.length - 1] + ".pdf";
+  folder.file(fileName, pdfBlob);
+
+  showMsg(`Page ${pageNum} saved at ${path}.pdf`);
+
+  // Clear rename input after saving
+  document.getElementById("customName").value = "";
+};
+
+// --- Download all saved pages as ZIP ---
+document.getElementById("downloadAll").onclick = () => {
+  if (Object.keys(zip.files).length === 0) return showMsg("No pages saved yet.");
+  zip.generateAsync({ type: "blob" }).then(content => {
+    saveAs(content, "PDF_Pages.zip");
+  });
+};
+
+// --- Keyboard shortcuts ---
+document.addEventListener("keydown", (e) => {
+  // Enter → Save this page
+  if (e.key === "Enter") {
+    document.getElementById("savePage").click();
+    e.preventDefault();
+  }
+  // Right Arrow → Next page
+  else if (e.key === "ArrowRight") {
+    document.getElementById("next").click();
+  }
+  // Left Arrow → Previous page
+  else if (e.key === "ArrowLeft") {
+    document.getElementById("prev").click();
+  }
+});
+</script>
+
+</body>
+</html>
